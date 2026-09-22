@@ -58,4 +58,9 @@
 安装全功能 sing-box：
 
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/caigouzi121380/singbox-deploy/main/install-singbox-yyds.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/xzwork/singbox-deploy/main/install-singbox-yyds.sh)"
+```
+
+```
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/xzwork/singbox-deploy/main/install-3proxy.sh)"
+```
