@@ -1,0 +1,1206 @@
+#!/usr/bin/env bash
+
+set -u
+
+# ============================================================
+# Tinyproxy 管理面板
+# Alpine Linux
+# ============================================================
+
+CONFIG_DIR="/etc/tinyproxy"
+CONFIG_FILE="${CONFIG_DIR}/tinyproxy.conf"
+STATE_FILE="${CONFIG_DIR}/tp.conf"
+
+LOG_DIR="${CONFIG_DIR}/log"
+LOG_FILE="${LOG_DIR}/tinyproxy.log"
+PID_FILE="/run/tinyproxy/tinyproxy.pid"
+
+DEFAULT_MAX_CLIENTS="30"
+
+PANEL_URL="https://raw.githubusercontent.com/xzwork/singbox-deploy/main/tp"
+
+# ============================================================
+# Color
+# ============================================================
+
+RED="\033[1;31m"
+GREEN="\033[1;32m"
+YELLOW="\033[1;33m"
+BLUE="\033[1;34m"
+NC="\033[0m"
+
+info() {
+    echo -e "${BLUE}[INFO]${NC} $*"
+}
+
+ok() {
+    echo -e "${GREEN}[OK]${NC} $*"
+}
+
+warn() {
+    echo -e "${YELLOW}[WARN]${NC} $*"
+}
+
+err() {
+    echo -e "${RED}[ERROR]${NC} $*" >&2
+}
+
+pause() {
+    echo
+    read -r -p "按回车继续..." _
+}
+
+# ============================================================
+# Checks
+# ============================================================
+
+check_root() {
+
+    if [ "$(id -u)" != "0" ]; then
+        err "必须使用 root 用户"
+        exit 1
+    fi
+}
+
+check_alpine() {
+
+    if [ ! -f /etc/alpine-release ]; then
+        err "仅支持 Alpine Linux"
+        exit 1
+    fi
+}
+
+is_installed() {
+    command -v tinyproxy >/dev/null 2>&1
+}
+
+# ============================================================
+# State
+# ============================================================
+
+load_state() {
+
+    PROXY_USER=""
+    PROXY_PASS=""
+    PROXY_PORT=""
+    MAX_CLIENTS="$DEFAULT_MAX_CLIENTS"
+
+    if [ -f "$STATE_FILE" ]; then
+
+        local value=""
+
+        value="$(
+            grep '^PROXY_USER=' "$STATE_FILE" 2>/dev/null \
+            | head -1 \
+            | cut -d= -f2- \
+            || true
+        )"
+
+        [ -n "$value" ] && PROXY_USER="$value"
+
+        value="$(
+            grep '^PROXY_PASS=' "$STATE_FILE" 2>/dev/null \
+            | head -1 \
+            | cut -d= -f2- \
+            || true
+        )"
+
+        [ -n "$value" ] && PROXY_PASS="$value"
+
+        value="$(
+            grep '^PROXY_PORT=' "$STATE_FILE" 2>/dev/null \
+            | head -1 \
+            | cut -d= -f2- \
+            || true
+        )"
+
+        [ -n "$value" ] && PROXY_PORT="$value"
+
+        value="$(
+            grep '^MAX_CLIENTS=' "$STATE_FILE" 2>/dev/null \
+            | head -1 \
+            | cut -d= -f2- \
+            || true
+        )"
+
+        [ -n "$value" ] && MAX_CLIENTS="$value"
+    fi
+}
+
+save_state() {
+
+    mkdir -p "$CONFIG_DIR"
+
+    cat > "$STATE_FILE" <<EOF
+PROXY_USER=${PROXY_USER}
+PROXY_PASS=${PROXY_PASS}
+PROXY_PORT=${PROXY_PORT}
+MAX_CLIENTS=${MAX_CLIENTS}
+EOF
+
+    chmod 600 "$STATE_FILE"
+}
+
+# ============================================================
+# Helpers
+# ============================================================
+
+validate_port() {
+
+    local PORT="$1"
+
+    if ! echo "$PORT" | grep -Eq '^[0-9]+$'; then
+        return 1
+    fi
+
+    if [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
+        return 1
+    fi
+
+    return 0
+}
+
+get_service_user() {
+
+    SERVICE_USER=""
+    SERVICE_GROUP=""
+
+    if id tinyproxy >/dev/null 2>&1; then
+        SERVICE_USER="tinyproxy"
+    fi
+
+    if [ -n "$SERVICE_USER" ]; then
+        SERVICE_GROUP="$(id -gn "$SERVICE_USER")"
+    fi
+}
+
+fix_permissions() {
+
+    get_service_user
+
+    mkdir -p "$CONFIG_DIR"
+    mkdir -p "$LOG_DIR"
+    mkdir -p /run/tinyproxy
+
+    if [ -n "$SERVICE_USER" ]; then
+
+        chown "$SERVICE_USER:$SERVICE_GROUP" "$CONFIG_FILE" 2>/dev/null || true
+        chmod 600 "$CONFIG_FILE" 2>/dev/null || true
+
+        chown -R "$SERVICE_USER:$SERVICE_GROUP" "$LOG_DIR" 2>/dev/null || true
+        chmod 700 "$LOG_DIR" 2>/dev/null || true
+
+        chown "$SERVICE_USER:$SERVICE_GROUP" /run/tinyproxy 2>/dev/null || true
+
+    else
+
+        chmod 600 "$CONFIG_FILE" 2>/dev/null || true
+        chmod 755 "$LOG_DIR" 2>/dev/null || true
+    fi
+}
+
+backup_config() {
+
+    if [ -f "$CONFIG_FILE" ]; then
+
+        local BACKUP_FILE
+
+        BACKUP_FILE="${CONFIG_FILE}.bak.$(date +%Y%m%d_%H%M%S)"
+
+        cp "$CONFIG_FILE" "$BACKUP_FILE"
+
+        info "配置已备份:"
+        echo "$BACKUP_FILE"
+    fi
+}
+
+# ============================================================
+# Initial input
+# ============================================================
+
+input_initial_config() {
+
+    echo
+    echo "=============================================="
+    echo "             Tinyproxy 首次配置"
+    echo "=============================================="
+    echo
+
+    while true
+    do
+
+        read -r -p "请输入代理用户名: " PROXY_USER
+
+        if [ -z "$PROXY_USER" ]; then
+            warn "用户名不能为空"
+            continue
+        fi
+
+        if echo "$PROXY_USER" | grep -Eq '[[:space:]]'; then
+            warn "用户名不能包含空格"
+            continue
+        fi
+
+        break
+    done
+
+    echo
+
+    while true
+    do
+
+        read -r -s -p "请输入代理密码: " PROXY_PASS
+        echo
+
+        if [ -z "$PROXY_PASS" ]; then
+            warn "密码不能为空"
+            continue
+        fi
+
+        if echo "$PROXY_PASS" | grep -Eq '[[:space:]]'; then
+            warn "密码暂不支持空格"
+            continue
+        fi
+
+        break
+    done
+
+    echo
+
+    while true
+    do
+
+        read -r -p "请输入 HTTP/HTTPS 代理端口: " PROXY_PORT
+
+        if ! validate_port "$PROXY_PORT"; then
+            warn "端口必须是 1-65535"
+            continue
+        fi
+
+        break
+    done
+
+    MAX_CLIENTS="$DEFAULT_MAX_CLIENTS"
+
+    echo
+    echo "----------------------------------------------"
+    echo "用户名       : $PROXY_USER"
+    echo "端口         : $PROXY_PORT"
+    echo "最大客户端   : $MAX_CLIENTS"
+    echo "----------------------------------------------"
+}
+
+# ============================================================
+# Generate config
+# ============================================================
+
+generate_config() {
+
+    mkdir -p "$CONFIG_DIR"
+    mkdir -p "$LOG_DIR"
+    mkdir -p /run/tinyproxy
+
+    backup_config
+
+    get_service_user
+
+    local RUN_USER
+    local RUN_GROUP
+
+    RUN_USER="${SERVICE_USER:-tinyproxy}"
+    RUN_GROUP="${SERVICE_GROUP:-tinyproxy}"
+
+    cat > "$CONFIG_FILE" <<EOF
+# ============================================================
+# Tinyproxy configuration
+# ============================================================
+
+User ${RUN_USER}
+Group ${RUN_GROUP}
+
+Port ${PROXY_PORT}
+
+Listen 0.0.0.0
+
+Timeout 600
+
+MaxClients ${MAX_CLIENTS}
+
+LogFile "${LOG_FILE}"
+LogLevel Connect
+
+PidFile "${PID_FILE}"
+
+BasicAuth ${PROXY_USER} ${PROXY_PASS}
+
+# 不配置 Allow / Deny 时，Tinyproxy 默认允许所有来源。
+# 访问控制由 BasicAuth 负责。
+
+# 不设置 ConnectPort：
+# Tinyproxy 将允许 CONNECT 到所有目标端口。
+EOF
+
+    save_state
+
+    fix_permissions
+
+    ok "Tinyproxy 配置已生成"
+}
+
+# ============================================================
+# Install
+# ============================================================
+
+install_tinyproxy() {
+
+    if is_installed; then
+        warn "Tinyproxy 已安装"
+        return
+    fi
+
+    input_initial_config
+
+    echo
+
+    info "更新 APK..."
+
+    apk update || {
+        err "apk update 失败"
+        return
+    }
+
+    info "安装基础工具..."
+
+    apk add \
+        --no-cache \
+        bash \
+        curl \
+        iproute2 \
+        procps \
+        >/dev/null 2>&1 || true
+
+    info "安装 Tinyproxy..."
+
+    apk add \
+        --no-cache \
+        tinyproxy \
+        tinyproxy-openrc || {
+            err "Tinyproxy 安装失败"
+            return
+        }
+
+    if ! is_installed; then
+        err "安装完成但未找到 tinyproxy"
+        return
+    fi
+
+    generate_config
+
+    rc-update add tinyproxy default >/dev/null 2>&1 || true
+
+    echo
+    info "启动 Tinyproxy..."
+
+    if rc-service tinyproxy restart; then
+        sleep 1
+    else
+        err "Tinyproxy 启动失败"
+        diagnose
+        return
+    fi
+
+    if rc-service tinyproxy status >/dev/null 2>&1; then
+
+        ok "Tinyproxy 安装并启动成功"
+
+        echo
+        show_connection
+
+    else
+
+        err "Tinyproxy 服务状态异常"
+        diagnose
+    fi
+}
+
+# ============================================================
+# Update
+# ============================================================
+
+update_tinyproxy() {
+
+    if ! is_installed; then
+        warn "Tinyproxy 尚未安装"
+        return
+    fi
+
+    backup_config
+
+    info "更新 APK..."
+
+    apk update || {
+        err "apk update 失败"
+        return
+    }
+
+    info "更新 Tinyproxy..."
+
+    apk add \
+        --upgrade \
+        tinyproxy \
+        tinyproxy-openrc || {
+            err "更新失败"
+            return
+        }
+
+    fix_permissions
+
+    rc-service tinyproxy restart || {
+        err "更新成功，但服务重启失败"
+        diagnose
+        return
+    }
+
+    ok "Tinyproxy 更新完成"
+}
+
+# ============================================================
+# Update panel
+# ============================================================
+
+update_panel() {
+
+    local TARGET="/usr/local/bin/tp"
+
+    info "更新 tp 面板..."
+
+    curl -fsSL "$PANEL_URL" -o "${TARGET}.new" || {
+        err "下载失败"
+        rm -f "${TARGET}.new"
+        return
+    }
+
+    if [ ! -s "${TARGET}.new" ]; then
+        err "下载文件为空"
+        rm -f "${TARGET}.new"
+        return
+    fi
+
+    sed -i 's/\r$//' "${TARGET}.new"
+
+    chmod +x "${TARGET}.new"
+
+    mv "${TARGET}.new" "$TARGET"
+
+    ok "tp 面板更新完成"
+}
+
+# ============================================================
+# Uninstall
+# ============================================================
+
+uninstall_tinyproxy() {
+
+    echo
+
+    warn "即将卸载 Tinyproxy"
+
+    read -r -p "确认卸载？(y/N): " CONFIRM
+
+    case "$CONFIRM" in
+        y|Y)
+            ;;
+        *)
+            info "已取消"
+            return
+            ;;
+    esac
+
+    rc-service tinyproxy stop >/dev/null 2>&1 || true
+
+    rc-update del tinyproxy default >/dev/null 2>&1 || true
+
+    apk del tinyproxy tinyproxy-openrc >/dev/null 2>&1 || true
+
+    echo
+
+    read -r -p "是否删除 /etc/tinyproxy 配置？(y/N): " DEL_CONFIG
+
+    case "$DEL_CONFIG" in
+
+        y|Y)
+            rm -rf "$CONFIG_DIR"
+            rm -rf /run/tinyproxy
+            ok "Tinyproxy 和配置已删除"
+            ;;
+
+        *)
+            ok "Tinyproxy 已卸载，配置已保留"
+            ;;
+    esac
+}
+
+# ============================================================
+# Modify user
+# ============================================================
+
+change_user() {
+
+    load_state
+
+    if [ -z "$PROXY_USER" ]; then
+        warn "尚未配置"
+        return
+    fi
+
+    echo
+    echo "当前用户名：$PROXY_USER"
+    echo
+
+    read -r -p "请输入新用户名: " NEW_USER
+
+    if [ -z "$NEW_USER" ]; then
+        warn "用户名不能为空"
+        return
+    fi
+
+    if echo "$NEW_USER" | grep -Eq '[[:space:]]'; then
+        err "用户名不能包含空格"
+        return
+    fi
+
+    PROXY_USER="$NEW_USER"
+
+    generate_config
+
+    restart_service
+}
+
+# ============================================================
+# Modify password
+# ============================================================
+
+change_password() {
+
+    load_state
+
+    echo
+
+    read -r -s -p "请输入新密码: " NEW_PASS
+    echo
+
+    if [ -z "$NEW_PASS" ]; then
+        warn "密码不能为空"
+        return
+    fi
+
+    if echo "$NEW_PASS" | grep -Eq '[[:space:]]'; then
+        err "密码暂不支持空格"
+        return
+    fi
+
+    PROXY_PASS="$NEW_PASS"
+
+    generate_config
+
+    restart_service
+}
+
+# ============================================================
+# Modify port
+# ============================================================
+
+change_port() {
+
+    load_state
+
+    echo
+    echo "当前端口：$PROXY_PORT"
+    echo
+
+    read -r -p "请输入新端口: " NEW_PORT
+
+    if ! validate_port "$NEW_PORT"; then
+        err "端口必须为 1-65535"
+        return
+    fi
+
+    PROXY_PORT="$NEW_PORT"
+
+    generate_config
+
+    restart_service
+}
+
+# ============================================================
+# Modify max clients
+# ============================================================
+
+change_maxclients() {
+
+    load_state
+
+    echo
+    echo "当前最大客户端数：$MAX_CLIENTS"
+    echo
+
+    read -r -p "请输入新的最大客户端数: " NEW_MAX
+
+    if ! echo "$NEW_MAX" | grep -Eq '^[0-9]+$'; then
+        err "必须输入数字"
+        return
+    fi
+
+    if [ "$NEW_MAX" -lt 1 ]; then
+        err "必须大于 0"
+        return
+    fi
+
+    MAX_CLIENTS="$NEW_MAX"
+
+    generate_config
+
+    restart_service
+}
+
+# ============================================================
+# Service
+# ============================================================
+
+start_service() {
+
+    if ! is_installed; then
+        warn "Tinyproxy 尚未安装"
+        return
+    fi
+
+    rc-service tinyproxy start
+}
+
+stop_service() {
+
+    if ! is_installed; then
+        warn "Tinyproxy 尚未安装"
+        return
+    fi
+
+    rc-service tinyproxy stop
+}
+
+restart_service() {
+
+    if ! is_installed; then
+        warn "Tinyproxy 尚未安装"
+        return
+    fi
+
+    fix_permissions
+
+    if rc-service tinyproxy restart; then
+        ok "Tinyproxy 重启成功"
+    else
+        err "Tinyproxy 重启失败"
+        diagnose
+    fi
+}
+
+# ============================================================
+# Status
+# ============================================================
+
+show_status() {
+
+    echo
+
+    if ! is_installed; then
+        warn "Tinyproxy 未安装"
+        return
+    fi
+
+    echo "========== 版本 =========="
+
+    apk info tinyproxy 2>/dev/null \
+        | head -1 \
+        || true
+
+    echo
+
+    echo "========== 服务 =========="
+
+    rc-service tinyproxy status || true
+
+    echo
+
+    echo "========== 进程 =========="
+
+    ps | grep '[t]inyproxy' || true
+
+    echo
+
+    echo "========== 监听 =========="
+
+    show_port
+}
+
+show_port() {
+
+    load_state
+
+    if [ -z "$PROXY_PORT" ]; then
+        warn "尚未配置端口"
+        return
+    fi
+
+    ss -lntp 2>/dev/null \
+        | grep -E ":${PROXY_PORT}( |$)" \
+        || warn "未检测到端口监听"
+}
+
+# ============================================================
+# Config
+# ============================================================
+
+show_config() {
+
+    echo
+
+    if [ ! -f "$CONFIG_FILE" ]; then
+        warn "配置文件不存在"
+        return
+    fi
+
+    cat "$CONFIG_FILE"
+}
+
+edit_config() {
+
+    if [ ! -f "$CONFIG_FILE" ]; then
+        warn "配置文件不存在"
+        return
+    fi
+
+    backup_config
+
+    if command -v nano >/dev/null 2>&1; then
+        nano "$CONFIG_FILE"
+    else
+        vi "$CONFIG_FILE"
+    fi
+
+    fix_permissions
+
+    echo
+
+    read -r -p "是否重启 Tinyproxy？(Y/n): " ANSWER
+
+    case "$ANSWER" in
+        n|N)
+            ;;
+        *)
+            restart_service
+            ;;
+    esac
+}
+
+# ============================================================
+# Logs
+# ============================================================
+
+show_log() {
+
+    echo
+
+    if [ -f "$LOG_FILE" ]; then
+        tail -100 "$LOG_FILE"
+    else
+        warn "暂无日志"
+    fi
+}
+
+follow_log() {
+
+    mkdir -p "$LOG_DIR"
+
+    touch "$LOG_FILE"
+
+    fix_permissions
+
+    echo
+    echo "Ctrl+C 退出"
+    echo
+
+    tail -f "$LOG_FILE"
+}
+
+# ============================================================
+# Public IP
+# ============================================================
+
+get_public_ip() {
+
+    local IP=""
+
+    for URL in \
+        "https://api.ipify.org" \
+        "https://ifconfig.me" \
+        "https://icanhazip.com"
+    do
+
+        IP="$(
+            curl \
+                -4 \
+                -s \
+                --connect-timeout 3 \
+                --max-time 5 \
+                "$URL" \
+                2>/dev/null \
+                | tr -d '[:space:]' \
+                || true
+        )"
+
+        if echo "$IP" \
+            | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'
+        then
+            echo "$IP"
+            return
+        fi
+    done
+
+    echo "SERVER_IP"
+}
+
+# ============================================================
+# Connection info
+# ============================================================
+
+show_connection() {
+
+    load_state
+
+    if [ -z "$PROXY_USER" ] \
+        || [ -z "$PROXY_PASS" ] \
+        || [ -z "$PROXY_PORT" ]
+    then
+        warn "尚未完成配置"
+        return
+    fi
+
+    local PUBLIC_IP
+
+    PUBLIC_IP="$(get_public_ip)"
+
+    echo
+    echo "=================================================="
+    echo "HTTP / HTTPS Proxy"
+    echo "=================================================="
+    echo
+    echo "http://${PROXY_USER}:${PROXY_PASS}@${PUBLIC_IP}:${PROXY_PORT}"
+    echo
+    echo "=================================================="
+}
+
+# ============================================================
+# Test
+# ============================================================
+
+test_proxy() {
+
+    load_state
+
+    if [ -z "$PROXY_PORT" ]; then
+        warn "尚未完成配置"
+        return
+    fi
+
+    echo
+
+    info "测试 Tinyproxy..."
+
+    curl \
+        -v \
+        --connect-timeout 5 \
+        --max-time 15 \
+        -x "http://${PROXY_USER}:${PROXY_PASS}@127.0.0.1:${PROXY_PORT}" \
+        https://api.ipify.org
+
+    echo
+}
+
+# ============================================================
+# Diagnose
+# ============================================================
+
+diagnose() {
+
+    load_state
+
+    echo
+    echo "=================================================="
+    echo "               Tinyproxy 诊断"
+    echo "=================================================="
+
+    echo
+    echo "[1] Alpine"
+    cat /etc/alpine-release 2>/dev/null || true
+
+    echo
+    echo "[2] Package"
+    apk info tinyproxy 2>/dev/null | head -10 || true
+
+    echo
+    echo "[3] Binary"
+    command -v tinyproxy || true
+
+    echo
+    echo "[4] User"
+    get_service_user
+    echo "${SERVICE_USER:-unknown}:${SERVICE_GROUP:-unknown}"
+
+    echo
+    echo "[5] OpenRC"
+    ls -l /etc/init.d/tinyproxy 2>/dev/null || true
+    rc-service tinyproxy status 2>&1 || true
+
+    echo
+    echo "[6] Process"
+    ps | grep '[t]inyproxy' || true
+
+    echo
+    echo "[7] Port"
+
+    if [ -n "$PROXY_PORT" ]; then
+        ss -lntp 2>/dev/null \
+            | grep -E ":${PROXY_PORT}( |$)" \
+            || true
+    fi
+
+    echo
+    echo "[8] Config Permission"
+    ls -l "$CONFIG_FILE" 2>/dev/null || true
+
+    echo
+    echo "[9] Log Permission"
+    ls -ld "$LOG_DIR" 2>/dev/null || true
+
+    echo
+    echo "[10] Config"
+    cat "$CONFIG_FILE" 2>/dev/null || true
+
+    echo
+    echo "[11] Log"
+    tail -100 "$LOG_FILE" 2>/dev/null || true
+
+    echo
+    echo "=================================================="
+}
+
+# ============================================================
+# Menu
+# ============================================================
+
+show_menu() {
+
+    if [ -n "${TERM:-}" ]; then
+        clear 2>/dev/null || true
+    fi
+
+    load_state
+
+    echo "=================================================="
+    echo "            Tinyproxy 管理面板"
+    echo "=================================================="
+
+    if is_installed; then
+
+        local VERSION
+
+        VERSION="$(
+            apk info tinyproxy 2>/dev/null \
+                | head -1 \
+                || echo unknown
+        )"
+
+        echo "状态   : 已安装"
+        echo "版本   : $VERSION"
+
+    else
+
+        echo "状态   : 未安装"
+
+    fi
+
+    echo
+
+    if [ -n "$PROXY_USER" ]; then
+        echo "用户   : $PROXY_USER"
+    else
+        echo "用户   : 未配置"
+    fi
+
+    if [ -n "$PROXY_PORT" ]; then
+        echo "端口   : $PROXY_PORT"
+    else
+        echo "端口   : 未配置"
+    fi
+
+    echo "并发   : $MAX_CLIENTS"
+
+    echo
+    echo "--------------- 安装管理 ---------------"
+    echo "1)  安装 Tinyproxy"
+    echo "2)  更新 Tinyproxy"
+    echo "3)  卸载 Tinyproxy"
+    echo "4)  更新 tp 面板"
+
+    echo
+    echo "--------------- 配置管理 ---------------"
+    echo "5)  修改用户名"
+    echo "6)  修改密码"
+    echo "7)  修改端口"
+    echo "8)  修改最大客户端数"
+    echo "9)  编辑完整配置"
+    echo "10) 查看完整配置"
+
+    echo
+    echo "--------------- 服务管理 ---------------"
+    echo "11) 启动"
+    echo "12) 停止"
+    echo "13) 重启"
+    echo "14) 查看状态"
+
+    echo
+    echo "--------------- 测试信息 ---------------"
+    echo "15) 查看代理地址"
+    echo "16) 本机测试代理"
+    echo "17) 查看日志"
+    echo "18) 实时日志"
+    echo "19) 故障诊断"
+
+    echo
+    echo "0)  退出"
+
+    echo
+    echo "=================================================="
+}
+
+# ============================================================
+# MAIN
+# ============================================================
+
+check_root
+check_alpine
+
+while true
+do
+
+    show_menu
+
+    read -r -p "请选择: " CHOICE
+
+    case "${CHOICE:-}" in
+
+        1)
+            install_tinyproxy
+            pause
+            ;;
+
+        2)
+            update_tinyproxy
+            pause
+            ;;
+
+        3)
+            uninstall_tinyproxy
+            pause
+            ;;
+
+        4)
+            update_panel
+            pause
+            ;;
+
+        5)
+            change_user
+            pause
+            ;;
+
+        6)
+            change_password
+            pause
+            ;;
+
+        7)
+            change_port
+            pause
+            ;;
+
+        8)
+            change_maxclients
+            pause
+            ;;
+
+        9)
+            edit_config
+            pause
+            ;;
+
+        10)
+            show_config
+            pause
+            ;;
+
+        11)
+            start_service
+            pause
+            ;;
+
+        12)
+            stop_service
+            pause
+            ;;
+
+        13)
+            restart_service
+            pause
+            ;;
+
+        14)
+            show_status
+            pause
+            ;;
+
+        15)
+            show_connection
+            pause
+            ;;
+
+        16)
+            test_proxy
+            pause
+            ;;
+
+        17)
+            show_log
+            pause
+            ;;
+
+        18)
+            follow_log
+            ;;
+
+        19)
+            diagnose
+            pause
+            ;;
+
+        0)
+            exit 0
+            ;;
+
+        *)
+            warn "无效选项"
+            sleep 1
+            ;;
+    esac
+
+done
