@@ -1,24 +1,10 @@
-  #!/usr/bin/env bash
-
-# ============================================================
-#
-# 3proxy 管理面板
-#
-# 系统:
-#   Alpine Linux
-#
-# 默认配置:
-#   HTTP   : 60002
-#   SOCKS5 : 60003
-#   User   : meridian
-#   Pass   : xzw123..
-#
-# ============================================================
+#!/usr/bin/env bash
 
 set -u
 
 # ============================================================
-# 基础配置
+# 3proxy 管理面板
+# Alpine Linux
 # ============================================================
 
 REPO="https://dl-cdn.alpinelinux.org/alpine/edge/testing"
@@ -27,19 +13,12 @@ CONFIG_DIR="/etc/3proxy"
 CONFIG_FILE="${CONFIG_DIR}/3proxy.cfg"
 STATE_FILE="${CONFIG_DIR}/3p.conf"
 
-# 为了兼容你的精简 Alpine，
-# 不依赖 /var/log
 LOG_DIR="${CONFIG_DIR}/log"
 LOG_FILE="${LOG_DIR}/3proxy.log"
 
-DEFAULT_USER="meridian"
-DEFAULT_PASS="xzw123.."
-
-DEFAULT_HTTP_PORT="60002"
-DEFAULT_SOCKS_PORT="60003"
-
-# 128M 小内存机器保持保守
 DEFAULT_MAX_CONN="50"
+
+PANEL_URL="https://raw.githubusercontent.com/xzwork/singbox-deploy/main/3p"
 
 # ============================================================
 # 颜色
@@ -77,17 +56,15 @@ pause() {
 # ============================================================
 
 check_root() {
-
     if [ "$(id -u)" != "0" ]; then
-        err "必须使用 root 用户"
+        err "必须使用 root 用户运行"
         exit 1
     fi
 }
 
 check_alpine() {
-
     if [ ! -f /etc/alpine-release ]; then
-        err "当前面板只支持 Alpine Linux"
+        err "此脚本仅支持 Alpine Linux"
         exit 1
     fi
 }
@@ -97,17 +74,15 @@ is_installed() {
 }
 
 # ============================================================
-# State
+# 状态文件
 # ============================================================
 
 load_state() {
 
-    PROXY_USER="$DEFAULT_USER"
-    PROXY_PASS="$DEFAULT_PASS"
-
-    HTTP_PORT="$DEFAULT_HTTP_PORT"
-    SOCKS_PORT="$DEFAULT_SOCKS_PORT"
-
+    PROXY_USER=""
+    PROXY_PASS=""
+    HTTP_PORT=""
+    SOCKS_PORT=""
     MAX_CONN="$DEFAULT_MAX_CONN"
 
     if [ -f "$STATE_FILE" ]; then
@@ -120,9 +95,7 @@ load_state() {
             | cut -d= -f2- \
             || true
         )"
-
         [ -n "$value" ] && PROXY_USER="$value"
-
 
         value="$(
             grep '^PROXY_PASS=' "$STATE_FILE" 2>/dev/null \
@@ -130,9 +103,7 @@ load_state() {
             | cut -d= -f2- \
             || true
         )"
-
         [ -n "$value" ] && PROXY_PASS="$value"
-
 
         value="$(
             grep '^HTTP_PORT=' "$STATE_FILE" 2>/dev/null \
@@ -140,9 +111,7 @@ load_state() {
             | cut -d= -f2- \
             || true
         )"
-
         [ -n "$value" ] && HTTP_PORT="$value"
-
 
         value="$(
             grep '^SOCKS_PORT=' "$STATE_FILE" 2>/dev/null \
@@ -150,9 +119,7 @@ load_state() {
             | cut -d= -f2- \
             || true
         )"
-
         [ -n "$value" ] && SOCKS_PORT="$value"
-
 
         value="$(
             grep '^MAX_CONN=' "$STATE_FILE" 2>/dev/null \
@@ -160,9 +127,7 @@ load_state() {
             | cut -d= -f2- \
             || true
         )"
-
         [ -n "$value" ] && MAX_CONN="$value"
-
     fi
 }
 
@@ -181,7 +146,155 @@ EOF
     chmod 600 "$STATE_FILE"
 }
 
-load_state
+# ============================================================
+# 输入校验
+# ============================================================
+
+validate_port() {
+
+    local PORT="$1"
+
+    if ! echo "$PORT" | grep -Eq '^[0-9]+$'; then
+        return 1
+    fi
+
+    if [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
+        return 1
+    fi
+
+    return 0
+}
+
+input_initial_config() {
+
+    echo
+    echo "=============================================="
+    echo "              首次安装配置"
+    echo "=============================================="
+    echo
+
+    while true
+    do
+        read -r -p "请输入代理用户名: " PROXY_USER
+
+        if [ -z "$PROXY_USER" ]; then
+            warn "用户名不能为空"
+            continue
+        fi
+
+        if echo "$PROXY_USER" | grep -q ':'; then
+            warn "用户名不能包含 ':'"
+            continue
+        fi
+
+        break
+    done
+
+    echo
+
+    while true
+    do
+        read -r -s -p "请输入代理密码: " PROXY_PASS
+        echo
+
+        if [ -z "$PROXY_PASS" ]; then
+            warn "密码不能为空"
+            continue
+        fi
+
+        if echo "$PROXY_PASS" | grep -q ':'; then
+            warn "密码暂不支持包含 ':'"
+            continue
+        fi
+
+        break
+    done
+
+    echo
+
+    while true
+    do
+        read -r -p "请输入 HTTP/HTTPS 代理端口: " HTTP_PORT
+
+        if ! validate_port "$HTTP_PORT"; then
+            warn "端口必须为 1-65535"
+            continue
+        fi
+
+        break
+    done
+
+    echo
+
+    while true
+    do
+        read -r -p "请输入 SOCKS5 代理端口: " SOCKS_PORT
+
+        if ! validate_port "$SOCKS_PORT"; then
+            warn "端口必须为 1-65535"
+            continue
+        fi
+
+        if [ "$SOCKS_PORT" = "$HTTP_PORT" ]; then
+            warn "SOCKS5 端口不能和 HTTP 端口相同"
+            continue
+        fi
+
+        break
+    done
+
+    MAX_CONN="$DEFAULT_MAX_CONN"
+
+    echo
+    echo "----------------------------------------------"
+    echo "用户名       : $PROXY_USER"
+    echo "HTTP 端口    : $HTTP_PORT"
+    echo "SOCKS5 端口  : $SOCKS_PORT"
+    echo "最大连接数   : $MAX_CONN"
+    echo "----------------------------------------------"
+}
+
+# ============================================================
+# 服务用户与权限
+# ============================================================
+
+get_service_user() {
+
+    SERVICE_USER=""
+    SERVICE_GROUP=""
+
+    if id 3proxy >/dev/null 2>&1; then
+        SERVICE_USER="3proxy"
+    elif id proxy >/dev/null 2>&1; then
+        SERVICE_USER="proxy"
+    fi
+
+    if [ -n "$SERVICE_USER" ]; then
+        SERVICE_GROUP="$(id -gn "$SERVICE_USER")"
+    fi
+}
+
+fix_permissions() {
+
+    get_service_user
+
+    mkdir -p "$CONFIG_DIR"
+    mkdir -p "$LOG_DIR"
+
+    if [ -n "$SERVICE_USER" ]; then
+
+        chown "$SERVICE_USER:$SERVICE_GROUP" "$CONFIG_FILE" 2>/dev/null || true
+        chmod 600 "$CONFIG_FILE" 2>/dev/null || true
+
+        chown -R "$SERVICE_USER:$SERVICE_GROUP" "$LOG_DIR" 2>/dev/null || true
+        chmod 700 "$LOG_DIR" 2>/dev/null || true
+
+    else
+
+        chmod 600 "$CONFIG_FILE" 2>/dev/null || true
+        chmod 755 "$LOG_DIR" 2>/dev/null || true
+    fi
+}
 
 # ============================================================
 # 配置备份
@@ -203,7 +316,7 @@ backup_config() {
 }
 
 # ============================================================
-# 生成 3proxy 配置
+# 生成配置
 # ============================================================
 
 generate_config() {
@@ -211,65 +324,40 @@ generate_config() {
     mkdir -p "$CONFIG_DIR"
     mkdir -p "$LOG_DIR"
 
-    chmod 700 "$LOG_DIR"
-
     backup_config
 
     cat > "$CONFIG_FILE" <<EOF
 # ============================================================
 # 3proxy configuration
-#
-# HTTP:
-#   ${HTTP_PORT}
-#
-# SOCKS5:
-#   ${SOCKS_PORT}
-#
-# User:
-#   ${PROXY_USER}
-#
 # ============================================================
 
-# DNS cache
 nscache 1024
 
-# Timeout
 timeouts 1 5 30 60 180 1800 15 60 15 5
 
-# 128M VPS 保守限制
 maxconn ${MAX_CONN}
 
-# Logging
 log ${LOG_FILE} D
 rotate 3
-
-# ============================================================
-# User
-#
-# CL = clear text password
-# ============================================================
 
 users ${PROXY_USER}:CL:${PROXY_PASS}
 
 # ============================================================
-# HTTP / HTTPS Proxy
+# HTTP / HTTPS
 # ============================================================
 
 auth strong
-
 allow ${PROXY_USER}
 
 proxy -p${HTTP_PORT} -i0.0.0.0
 
 flush
 
-
 # ============================================================
 # SOCKS5
 # ============================================================
 
 auth strong
-
 allow ${PROXY_USER}
 
 socks -p${SOCKS_PORT} -i0.0.0.0
@@ -277,9 +365,9 @@ socks -p${SOCKS_PORT} -i0.0.0.0
 flush
 EOF
 
-    chmod 600 "$CONFIG_FILE"
-
     save_state
+
+    fix_permissions
 
     ok "配置已生成"
 }
@@ -290,16 +378,23 @@ EOF
 
 install_3proxy() {
 
-    echo
+    if is_installed; then
+        warn "3proxy 已经安装"
+        return
+    fi
 
-    info "开始安装 3proxy..."
+    input_initial_config
+
+    echo
+    info "更新 APK..."
 
     apk update || {
         err "apk update 失败"
         return
     }
 
-    # 基础工具
+    info "安装基础工具..."
+
     apk add \
         --no-cache \
         bash \
@@ -308,54 +403,47 @@ install_3proxy() {
         procps \
         >/dev/null 2>&1 || true
 
-    # 安装 3proxy
+    info "安装 3proxy..."
+
     apk add \
         --no-cache \
         --repository="$REPO" \
         3proxy \
-        3proxy-openrc
+        3proxy-openrc || {
+            err "3proxy 安装失败"
+            return
+        }
 
     if ! is_installed; then
-        err "3proxy 安装失败"
+        err "安装完成但未找到 3proxy"
         return
     fi
 
-    ok "3proxy 已安装"
-
-    echo
-
-    info "3proxy binary:"
-    command -v 3proxy
-
     generate_config
 
-    # 添加开机启动
     rc-update add 3proxy default >/dev/null 2>&1 || true
 
     echo
+    info "启动服务..."
 
-    info "启动 3proxy..."
-
-    rc-service 3proxy restart
-
-    sleep 1
+    if rc-service 3proxy restart; then
+        sleep 1
+    else
+        err "服务启动失败"
+        diagnose
+        return
+    fi
 
     if rc-service 3proxy status >/dev/null 2>&1; then
 
-        ok "3proxy 启动成功"
+        ok "3proxy 安装并启动成功"
 
         echo
-
-        show_ports
-
-        echo
-
         show_connection
 
     else
 
-        err "3proxy 启动失败"
-
+        err "3proxy 启动后状态异常"
         diagnose
     fi
 }
@@ -371,17 +459,7 @@ update_3proxy() {
         return
     fi
 
-    echo
-
-    info "当前版本:"
-
-    apk info 3proxy 2>/dev/null \
-        | head -1 \
-        || true
-
     backup_config
-
-    echo
 
     info "更新 APK..."
 
@@ -390,48 +468,39 @@ update_3proxy() {
         return
     }
 
-    echo
-
     info "更新 3proxy..."
 
     apk add \
         --upgrade \
         --repository="$REPO" \
         3proxy \
-        3proxy-openrc
+        3proxy-openrc || {
+            err "更新失败"
+            return
+        }
 
-    echo
+    fix_permissions
 
-    info "更新后版本:"
-
-    apk info 3proxy 2>/dev/null \
-        | head -1 \
-        || true
-
-    echo
-
-    rc-service 3proxy restart
+    rc-service 3proxy restart || {
+        err "更新完成，但服务重启失败"
+        diagnose
+        return
+    }
 
     ok "3proxy 更新完成"
 }
 
 # ============================================================
-# 更新管理面板
+# 更新面板
 # ============================================================
 
 update_panel() {
 
-    local URL
-    local TARGET
+    local TARGET="/usr/local/bin/3p"
 
-    URL="https://raw.githubusercontent.com/xzwork/singbox-deploy/main/3p"
-    TARGET="/usr/local/bin/3p"
+    info "更新 3p 面板..."
 
-    echo
-
-    info "正在更新 3p 管理面板..."
-
-    curl -fsSL "$URL" -o "${TARGET}.new" || {
+    curl -fsSL "$PANEL_URL" -o "${TARGET}.new" || {
         err "下载失败"
         rm -f "${TARGET}.new"
         return
@@ -462,52 +531,36 @@ uninstall_3proxy() {
 
     warn "即将卸载 3proxy"
 
-    echo
-
     read -r -p "确认卸载？(y/N): " CONFIRM
 
     case "$CONFIRM" in
-
         y|Y)
             ;;
-
         *)
             info "已取消"
             return
             ;;
-
     esac
 
     rc-service 3proxy stop >/dev/null 2>&1 || true
-
     rc-update del 3proxy default >/dev/null 2>&1 || true
 
-    apk del \
-        3proxy \
-        3proxy-openrc \
-        >/dev/null 2>&1 \
-        || true
+    apk del 3proxy 3proxy-openrc >/dev/null 2>&1 || true
 
     echo
 
-    read -r -p "是否删除配置 /etc/3proxy？(y/N): " DEL_CONFIG
+    read -r -p "是否同时删除 /etc/3proxy 配置？(y/N): " DEL_CONFIG
 
     case "$DEL_CONFIG" in
 
         y|Y)
-
             rm -rf "$CONFIG_DIR"
-
-            ok "3proxy 和配置已删除"
-
+            ok "程序和配置已删除"
             ;;
 
         *)
-
-            ok "3proxy 已卸载，配置保留"
-
+            ok "程序已卸载，配置已保留"
             ;;
-
     esac
 }
 
@@ -519,10 +572,13 @@ change_user() {
 
     load_state
 
+    if [ -z "$PROXY_USER" ]; then
+        warn "尚未完成初始配置"
+        return
+    fi
+
     echo
-    echo "当前用户名:"
-    echo
-    echo "$PROXY_USER"
+    echo "当前用户名：$PROXY_USER"
     echo
 
     read -r -p "请输入新用户名: " NEW_USER
@@ -533,7 +589,7 @@ change_user() {
     fi
 
     if echo "$NEW_USER" | grep -q ':'; then
-        err "用户名不能包含冒号 ':'"
+        err "用户名不能包含 ':'"
         return
     fi
 
@@ -552,20 +608,21 @@ change_password() {
 
     load_state
 
-    echo
-    echo "当前密码:"
-    echo
-    echo "$PROXY_PASS"
+    if [ -z "$PROXY_PASS" ]; then
+        warn "尚未完成初始配置"
+        return
+    fi
+
     echo
 
-    read -r -p "请输入新密码: " NEW_PASS
+    read -r -s -p "请输入新密码: " NEW_PASS
+    echo
 
     if [ -z "$NEW_PASS" ]; then
         warn "密码不能为空"
         return
     fi
 
-    # CL 格式用 : 分隔
     if echo "$NEW_PASS" | grep -q ':'; then
         err "密码暂不支持包含 ':'"
         return
@@ -587,25 +644,18 @@ change_http_port() {
     load_state
 
     echo
-    echo "当前 HTTP 端口:"
-    echo
-    echo "$HTTP_PORT"
+    echo "当前 HTTP 端口：$HTTP_PORT"
     echo
 
     read -r -p "请输入新 HTTP 端口: " NEW_PORT
 
-    if ! echo "$NEW_PORT" | grep -Eq '^[0-9]+$'; then
-        err "端口必须为数字"
-        return
-    fi
-
-    if [ "$NEW_PORT" -lt 1 ] || [ "$NEW_PORT" -gt 65535 ]; then
-        err "端口范围 1-65535"
+    if ! validate_port "$NEW_PORT"; then
+        err "端口必须为 1-65535"
         return
     fi
 
     if [ "$NEW_PORT" = "$SOCKS_PORT" ]; then
-        err "HTTP 和 SOCKS5 不能使用同一端口"
+        err "HTTP 和 SOCKS5 不能使用相同端口"
         return
     fi
 
@@ -625,25 +675,18 @@ change_socks_port() {
     load_state
 
     echo
-    echo "当前 SOCKS5 端口:"
-    echo
-    echo "$SOCKS_PORT"
+    echo "当前 SOCKS5 端口：$SOCKS_PORT"
     echo
 
     read -r -p "请输入新 SOCKS5 端口: " NEW_PORT
 
-    if ! echo "$NEW_PORT" | grep -Eq '^[0-9]+$'; then
-        err "端口必须为数字"
-        return
-    fi
-
-    if [ "$NEW_PORT" -lt 1 ] || [ "$NEW_PORT" -gt 65535 ]; then
-        err "端口范围 1-65535"
+    if ! validate_port "$NEW_PORT"; then
+        err "端口必须为 1-65535"
         return
     fi
 
     if [ "$NEW_PORT" = "$HTTP_PORT" ]; then
-        err "HTTP 和 SOCKS5 不能使用同一端口"
+        err "HTTP 和 SOCKS5 不能使用相同端口"
         return
     fi
 
@@ -655,7 +698,7 @@ change_socks_port() {
 }
 
 # ============================================================
-# 修改 maxconn
+# 修改最大连接数
 # ============================================================
 
 change_maxconn() {
@@ -663,9 +706,7 @@ change_maxconn() {
     load_state
 
     echo
-    echo "当前最大连接数:"
-    echo
-    echo "$MAX_CONN"
+    echo "当前最大连接数：$MAX_CONN"
     echo
 
     read -r -p "请输入新的最大连接数: " NEW_MAX
@@ -718,16 +759,12 @@ restart_service() {
         return
     fi
 
-    echo
+    fix_permissions
 
     if rc-service 3proxy restart; then
-
         ok "3proxy 重启成功"
-
     else
-
         err "3proxy 重启失败"
-
         diagnose
     fi
 }
@@ -778,9 +815,14 @@ show_ports() {
 
     load_state
 
+    if [ -z "$HTTP_PORT" ] || [ -z "$SOCKS_PORT" ]; then
+        warn "尚未完成初始配置"
+        return
+    fi
+
     ss -lntp 2>/dev/null \
         | grep -E ":(${HTTP_PORT}|${SOCKS_PORT})( |$)" \
-        || warn "未检测到 60002/60003 对应监听"
+        || warn "未检测到代理端口监听"
 }
 
 # ============================================================
@@ -797,28 +839,23 @@ edit_config() {
     backup_config
 
     if command -v nano >/dev/null 2>&1; then
-
         nano "$CONFIG_FILE"
-
     else
-
         vi "$CONFIG_FILE"
-
     fi
+
+    fix_permissions
 
     echo
 
-    read -r -p "是否重启 3proxy？(Y/n): " ANSWER
+    read -r -p "是否重启 3proxy 应用配置？(Y/n): " ANSWER
 
     case "$ANSWER" in
-
         n|N)
             ;;
-
         *)
             restart_service
             ;;
-
     esac
 }
 
@@ -843,11 +880,8 @@ show_log() {
     echo
 
     if [ -f "$LOG_FILE" ]; then
-
         tail -100 "$LOG_FILE"
-
     else
-
         warn "暂无日志"
     fi
 }
@@ -855,8 +889,9 @@ show_log() {
 follow_log() {
 
     mkdir -p "$LOG_DIR"
-
     touch "$LOG_FILE"
+
+    fix_permissions
 
     echo
     echo "Ctrl+C 退出"
@@ -866,7 +901,7 @@ follow_log() {
 }
 
 # ============================================================
-# 获取公网 IPv4
+# 获取公网 IP
 # ============================================================
 
 get_public_ip() {
@@ -894,27 +929,32 @@ get_public_ip() {
         if echo "$IP" \
             | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'
         then
-
             echo "$IP"
-
             return
         fi
-
     done
 
     echo "SERVER_IP"
 }
 
 # ============================================================
-# 显示代理信息
+# 查看代理地址
 # ============================================================
 
 show_connection() {
 
     load_state
 
-    local PUBLIC_IP
+    if [ -z "$PROXY_USER" ] \
+        || [ -z "$PROXY_PASS" ] \
+        || [ -z "$HTTP_PORT" ] \
+        || [ -z "$SOCKS_PORT" ]
+    then
+        warn "尚未完成初始配置"
+        return
+    fi
 
+    local PUBLIC_IP
     PUBLIC_IP="$(get_public_ip)"
 
     echo
@@ -923,12 +963,14 @@ show_connection() {
     echo "=================================================="
     echo
     echo "http://${PROXY_USER}:${PROXY_PASS}@${PUBLIC_IP}:${HTTP_PORT}"
+
     echo
     echo "=================================================="
     echo "SOCKS5"
     echo "=================================================="
     echo
     echo "socks5://${PROXY_USER}:${PROXY_PASS}@${PUBLIC_IP}:${SOCKS_PORT}"
+
     echo
     echo "=================================================="
 }
@@ -941,8 +983,12 @@ test_http() {
 
     load_state
 
-    echo
+    if [ -z "$HTTP_PORT" ]; then
+        warn "尚未完成初始配置"
+        return
+    fi
 
+    echo
     info "测试 HTTP Proxy..."
 
     curl \
@@ -963,8 +1009,12 @@ test_socks() {
 
     load_state
 
-    echo
+    if [ -z "$SOCKS_PORT" ]; then
+        warn "尚未完成初始配置"
+        return
+    fi
 
+    echo
     info "测试 SOCKS5..."
 
     curl \
@@ -993,50 +1043,54 @@ diagnose() {
 
     echo
     echo "[1] Alpine"
-
     cat /etc/alpine-release 2>/dev/null || true
 
     echo
-    echo "[2] 3proxy"
-
-    apk info 3proxy 2>/dev/null \
-        | head -10 \
-        || true
+    echo "[2] Package"
+    apk info 3proxy 2>/dev/null | head -10 || true
 
     echo
     echo "[3] Binary"
-
     command -v 3proxy || true
-
     ls -l /usr/bin/3proxy 2>/dev/null || true
 
     echo
-    echo "[4] OpenRC"
+    echo "[4] Service User"
+    get_service_user
+    echo "${SERVICE_USER:-unknown}:${SERVICE_GROUP:-unknown}"
 
+    echo
+    echo "[5] OpenRC"
     ls -l /etc/init.d/3proxy 2>/dev/null || true
-
     rc-service 3proxy status 2>&1 || true
 
     echo
-    echo "[5] Process"
-
+    echo "[6] Process"
     ps | grep '[3]proxy' || true
 
     echo
-    echo "[6] Port"
+    echo "[7] Ports"
 
-    ss -lntp 2>/dev/null \
-        | grep -E ":(${HTTP_PORT}|${SOCKS_PORT})( |$)" \
-        || true
+    if [ -n "$HTTP_PORT" ] && [ -n "$SOCKS_PORT" ]; then
+        ss -lntp 2>/dev/null \
+            | grep -E ":(${HTTP_PORT}|${SOCKS_PORT})( |$)" \
+            || true
+    fi
 
     echo
-    echo "[7] Config"
+    echo "[8] Config Permission"
+    ls -l "$CONFIG_FILE" 2>/dev/null || true
 
+    echo
+    echo "[9] Log Permission"
+    ls -ld "$LOG_DIR" 2>/dev/null || true
+
+    echo
+    echo "[10] Config"
     cat "$CONFIG_FILE" 2>/dev/null || true
 
     echo
-    echo "[8] Log"
-
+    echo "[11] Log"
     tail -100 "$LOG_FILE" 2>/dev/null || true
 
     echo
@@ -1049,7 +1103,6 @@ diagnose() {
 
 show_menu() {
 
-    # 某些极简 VPS TERM 不完整，因此不强制 clear
     if [ -n "${TERM:-}" ]; then
         clear 2>/dev/null || true
     fi
@@ -1074,16 +1127,30 @@ show_menu() {
         echo "版本   : $VERSION"
 
     else
-
         echo "状态   : 未安装"
-
     fi
 
     echo
-    echo "HTTP   : ${HTTP_PORT}"
-    echo "SOCKS5 : ${SOCKS_PORT}"
-    echo "用户   : ${PROXY_USER}"
-    echo "并发   : ${MAX_CONN}"
+
+    if [ -n "$PROXY_USER" ]; then
+        echo "用户   : $PROXY_USER"
+    else
+        echo "用户   : 未配置"
+    fi
+
+    if [ -n "$HTTP_PORT" ]; then
+        echo "HTTP   : $HTTP_PORT"
+    else
+        echo "HTTP   : 未配置"
+    fi
+
+    if [ -n "$SOCKS_PORT" ]; then
+        echo "SOCKS5 : $SOCKS_PORT"
+    else
+        echo "SOCKS5 : 未配置"
+    fi
+
+    echo "并发   : $MAX_CONN"
 
     echo
     echo "--------------- 安装管理 ---------------"
@@ -1120,6 +1187,7 @@ show_menu() {
 
     echo
     echo "0)  退出"
+
     echo
     echo "=================================================="
 }
@@ -1141,165 +1209,117 @@ do
     case "${CHOICE:-}" in
 
         1)
-
             install_3proxy
             pause
-
             ;;
 
         2)
-
             update_3proxy
             pause
-
             ;;
 
         3)
-
             uninstall_3proxy
             pause
-
             ;;
 
         4)
-
             update_panel
             pause
-
             ;;
 
         5)
-
             change_user
             pause
-
             ;;
 
         6)
-
             change_password
             pause
-
             ;;
 
         7)
-
             change_http_port
             pause
-
             ;;
 
         8)
-
             change_socks_port
             pause
-
             ;;
 
         9)
-
             change_maxconn
             pause
-
             ;;
 
         10)
-
             edit_config
             pause
-
             ;;
 
         11)
-
             show_config
             pause
-
             ;;
 
         12)
-
             start_service
             pause
-
             ;;
 
         13)
-
             stop_service
             pause
-
             ;;
 
         14)
-
             restart_service
             pause
-
             ;;
 
         15)
-
             show_status
             pause
-
             ;;
 
         16)
-
             show_connection
             pause
-
             ;;
 
         17)
-
             test_http
             pause
-
             ;;
 
         18)
-
             test_socks
             pause
-
             ;;
 
         19)
-
             show_log
             pause
-
             ;;
 
         20)
-
             follow_log
-
             ;;
 
         21)
-
             diagnose
             pause
-
             ;;
 
         0)
-
             exit 0
-
             ;;
 
         *)
-
             warn "无效选项"
-
             sleep 1
-
             ;;
-
     esac
 
 done
