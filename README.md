@@ -64,3 +64,7 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/xzwork/singbox-deploy/ma
 ```
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/xzwork/singbox-deploy/main/install-3proxy.sh)"
 ```
+
+```
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/xzwork/singbox-deploy/main/install-tinyproxy.sh)"
+```
